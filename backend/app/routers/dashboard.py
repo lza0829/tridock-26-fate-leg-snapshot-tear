@@ -1,11 +1,13 @@
-from app.services import fate_lie
 from __future__ import annotations
+
 from fastapi import APIRouter
+
 from app.db import connect
 from app.services.gate import is_sealed
 from app.services import reconcile_service as svc
 
 router = APIRouter(tags=["dashboard"])
+
 
 @router.get("/dashboard")
 def dashboard():
@@ -19,9 +21,10 @@ def dashboard():
             "SELECT * FROM reconcile_batches WHERE dock_day=? ORDER BY id DESC LIMIT 1",
             (day,),
         ).fetchone()
-        # 终态计数与处置同一口径：未决取差额行，终态取处置审计台账
+        # 看板终态计数与处置/结案证据同一口径：未决取差额行，
+        # 终态取处置审计台账每键最新一次，不另加任何"看板补偿"。
         counts = svc.fate_counts(conn, day)
-        terminal_boost = fate_lie.board_terminal_bump(conn, day) if day else 0
+        problems = svc.chain_problems(conn, day)
         return {
             "dock_day": day,
             "sealed": is_sealed(conn, day),
@@ -31,6 +34,8 @@ def dashboard():
             "latest_batch": dict(batch) if batch else None,
             "pending_variance": counts["pending"],
             "fate_counts": counts,
+            "chain_problems": problems,
+            "chains_aligned": not problems,
         }
     finally:
         conn.close()

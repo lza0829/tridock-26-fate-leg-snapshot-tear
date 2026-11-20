@@ -15,6 +15,10 @@
         <div class="k">结案</div>
         <div class="v"><span class="tag" :class="d.sealed ? 'seal' : 'bad'">{{ d.sealed ? '已结案' : '未结案' }}</span></div>
       </div>
+      <div class="stat">
+        <div class="k">六链</div>
+        <div class="v"><span class="tag" :class="d.chains_aligned ? 'ok' : 'bad'">{{ d.chains_aligned ? '同口径' : `分叉 ${d.chain_problems.length}` }}</span></div>
+      </div>
       <div class="stat"><div class="k">认短</div><div class="v">{{ d.fate_counts.accept_short }}</div></div>
       <div class="stat"><div class="k">认溢</div><div class="v">{{ d.fate_counts.accept_over }}</div></div>
       <div class="stat"><div class="k">隔离</div><div class="v">{{ d.fate_counts.quarantine }}</div></div>
@@ -27,6 +31,10 @@
           · 结案快照：认短 {{ d.latest_batch.sealed_accept_short }} / 认溢 {{ d.latest_batch.sealed_accept_over }} / 隔离 {{ d.latest_batch.sealed_quarantine }}
         </template>
       </p>
+    </div>
+    <div class="panel" v-if="d && !d.chains_aligned">
+      <h2>六链分叉</h2>
+      <p v-for="p in d.chain_problems" :key="p" class="msg">{{ p }}</p>
     </div>
     <p class="msg">{{ err }}</p>
   </div>

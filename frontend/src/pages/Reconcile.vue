@@ -24,6 +24,14 @@
       <p v-if="counts">
         未决 {{ counts.pending }} · 认短 {{ counts.accept_short }} · 认溢 {{ counts.accept_over }} · 隔离 {{ counts.quarantine }}
       </p>
+      <p v-if="chain">
+        <span class="tag" :class="chain.chains_aligned ? 'ok' : 'bad'">
+          {{ chain.chains_aligned ? '六链同口径' : '六链分叉' }}
+        </span>
+        <template v-if="!chain.chains_aligned">
+          <br /><span v-for="p in chain.problems" :key="p" class="msg">{{ p }}<br /></span>
+        </template>
+      </p>
     </div>
     <div class="panel">
       <h2>对齐行</h2>
@@ -40,12 +48,14 @@
     <div class="panel">
       <h2>差额处置</h2>
       <table>
-        <thead><tr><th>供应商</th><th>货号</th><th>三数量</th><th>命运</th><th>处置时间</th><th>操作</th></tr></thead>
+        <thead><tr><th>供应商</th><th>货号</th><th>处置时三数量</th><th>当前正式三腿</th><th>命运</th><th>可解释</th><th>处置时间</th><th>操作</th></tr></thead>
         <tbody>
           <tr v-for="r in variances" :key="r.id">
             <td>{{ r.supplier_code }}</td><td>{{ r.sku }}</td>
             <td>{{ r.expect_qty }} / {{ r.receive_qty }} / {{ r.confirm_qty }}</td>
+            <td>{{ r.current_expect_qty }} / {{ r.current_receive_qty }} / {{ r.current_confirm_qty }}</td>
             <td><span class="tag" :class="r.fate === 'pending' ? 'bad' : 'seal'">{{ fateLabel(r.fate) }}</span></td>
+            <td><span class="tag" :class="r.explained ? 'ok' : 'bad'">{{ r.explained ? '是' : '否' }}</span></td>
             <td>{{ r.disposed_at || '—' }}</td>
             <td>
               <button class="secondary" :disabled="!canDispose(r)" @click="fate(r.id, 'accept_short')">认短</button>
@@ -84,6 +94,7 @@ const matches = ref([])
 const variances = ref([])
 const audits = ref([])
 const counts = ref(null)
+const chain = ref(null)
 const err = ref('')
 const ok = ref('')
 const FATE_LABELS = { pending: '未决', accept_short: '认短', accept_over: '认溢', quarantine: '隔离' }
@@ -96,6 +107,7 @@ async function load() {
   const batches = await api(`/reconcile/batches?dock_day=${encodeURIComponent(day.value)}`)
   batch.value = batches[0] || null
   counts.value = await api(`/reconcile/fate-counts?dock_day=${encodeURIComponent(day.value)}`)
+  chain.value = await api(`/reconcile/chain-check?dock_day=${encodeURIComponent(day.value)}`)
   audits.value = await api(`/reconcile/audits?dock_day=${encodeURIComponent(day.value)}`)
   if (!batch.value) { matches.value = []; variances.value = []; return }
   matches.value = await api(`/reconcile/matches?batch_id=${batch.value.id}`)

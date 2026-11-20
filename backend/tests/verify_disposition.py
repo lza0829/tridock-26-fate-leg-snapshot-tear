@@ -282,6 +282,136 @@ s5 = svc.seal_day(conn, D5)
 check("S6b 重跑后可结案且快照带命运计数", s5["status"] == "sealed" and s5["sealed_accept_short"] == 1, str(s5))
 conn.close()
 
+# ---------- S8：六链夹具（终态行拧 / 行齐未决 / 扫描吞终态 / 交错半截） ----------
+# 四条夹具都必须让 chain_problems 报出问题并被结案闸挡下；
+# 走完正确处置 + 再次扫描后，六链必须归零且结案证据/看板/列表同口径。
+print("== S8 六链夹具：分叉必须被识别，收口后六链归零 ==")
+
+def seed_day(conn, day, eq, rq, cq):
+    leg(conn, "expect_lines", "doc_no", f"EX-{day}", SUP, RICE, day, eq)
+    leg(conn, "receive_lines", "receive_no", f"RC-{day}", SUP, RICE, day, rq)
+    leg(conn, "confirm_lines", "confirm_no", f"CF-{day}", SUP, RICE, day, cq)
+    conn.commit()
+
+def batch_of(conn):
+    return conn.execute(
+        "SELECT * FROM reconcile_batches ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+
+# S8a 终态行拧：标记已终态，但三行数量没回写（历史半截数据）
+conn = fresh_db()
+D6 = "2026-11-23"
+seed_day(conn, D6, 40, 38, 38)
+svc.run_reconcile(conn, D6)
+v = variance_of(conn, batch_of(conn)["id"], RICE)
+conn.execute("UPDATE variance_rows SET fate='accept_short', disposed_at='x' WHERE id=?", (v["id"],))
+conn.commit()
+p = svc.chain_problems(conn, D6)
+check("S8a 终态行拧被识别为分叉", any("无任何处置痕迹" in x for x in p), str(p))
+try:
+    svc.seal_day(conn, D6)
+    check("S8a 终态行拧禁止结案", False)
+except ValueError as e:
+    check("S8a 终态行拧禁止结案", "六链未对齐" in str(e), str(e))
+# 现行架构下：把这条半截标记作废重开未决，再走正常处置，六链才收口
+conn.execute("UPDATE variance_rows SET fate='pending', disposed_at=NULL WHERE id=?", (v["id"],))
+conn.commit()
+svc.dispose_variance(conn, v["id"], "accept_short")
+check("S8a 重开后正常处置六链归零", svc.chain_problems(conn, D6) == [], str(svc.chain_problems(conn, D6)))
+s = svc.seal_day(conn, D6)
+check("S8a 收口后可结案且计数与看板一致",
+      s["sealed_accept_short"] == svc.fate_counts(conn, D6)["accept_short"] == 1)
+conn.close()
+
+# S8b 行齐标记未决：三行已一致，差额行仍待处置
+conn = fresh_db()
+D7 = "2026-11-24"
+seed_day(conn, D7, 40, 38, 38)
+svc.run_reconcile(conn, D7)
+v = variance_of(conn, batch_of(conn)["id"], RICE)
+# 有人把预报腿补成实收数，但没重跑：三行齐了，差额行还 pending
+leg(conn, "expect_lines", "doc_no", "EX-ADJ", SUP, RICE, D7, -2)
+conn.commit()
+p = svc.chain_problems(conn, D7)
+check("S8b 行齐未决被识别", any("已行齐却仍记未决" in x for x in p), str(p))
+try:
+    svc.seal_day(conn, D7)
+    check("S8b 行齐未决禁止结案", False)
+except ValueError as e:
+    check("S8b 行齐未决禁止结案", "未处置" in str(e) or "六链未对齐" in str(e), str(e))
+# 再次扫描：数量已齐 => 新批次无差额，未决清零，六链归零
+b = svc.run_reconcile(conn, D7)
+p = svc.chain_problems(conn, D7)
+check("S8b 再次扫描后差额消失且六链归零", b["variance_count"] == 0 and p == [], str(p))
+s = svc.seal_day(conn, D7)
+check("S8b 收口后可结案且看板未决为 0", s["status"] == "sealed" and svc.fate_counts(conn, D7)["pending"] == 0)
+conn.close()
+
+# S8c 扫描吞终态：先终态，再数量变更重跑 -> 旧实现会 fate 抹成 pending 且台账不认
+conn = fresh_db()
+D8 = "2026-11-25"
+seed_day(conn, D8, 40, 38, 38)
+svc.run_reconcile(conn, D8)
+v = variance_of(conn, batch_of(conn)["id"], RICE)
+svc.dispose_variance(conn, v["id"], "accept_short")
+# 数量未变重跑：终态必须保留、台账不动、看板终态不重复加。
+# 认短已把三腿回写齐，重跑不再产出差额行——这本身就是终态被保住的表现，
+# 若不保住会被重新打成 pending 并复活差额行。
+svc.run_reconcile(conn, D8)
+vf_after = variance_of(conn, batch_of(conn)["id"], RICE)
+check("S8c 数量未变重跑终态不被抹（不复活差额行）", vf_after is None)
+check("S8c 重跑后看板终态仍为 1（不翻倍）", svc.fate_counts(conn, D8)["accept_short"] == 1,
+      str(svc.fate_counts(conn, D8)))
+# 数量变更重跑：旧终态被重开取代，看板不得在未决之外再加一次
+leg(conn, "receive_lines", "receive_no", "RC-LATE", SUP, RICE, D8, 2)
+conn.commit()
+# 重跑之前的窗口：晚到货已改三腿，台账仍记终态 -> 必须报分叉并禁止结案，
+# 而不是让看板把这条终态和拧着的三行一起封进证据。
+p_pre = svc.chain_problems(conn, D8)
+check("S8c 晚到货未重跑时六链报分叉", len(p_pre) > 0, str(p_pre))
+try:
+    svc.seal_day(conn, D8)
+    check("S8c 晚到货未重跑禁止结案", False)
+except ValueError as e:
+    check("S8c 晚到货未重跑禁止结案", "六链未对齐" in str(e), str(e))
+svc.run_reconcile(conn, D8)
+vf = variance_of(conn, batch_of(conn)["id"], RICE)
+c = svc.fate_counts(conn, D8)
+check("S8c 数量变更后终态被未决取代", vf["fate"] == "pending" and c["pending"] == 1 and c["accept_short"] == 0, str(c))
+p = svc.chain_problems(conn, D8)
+check("S8c 数量变更后六链不分叉（未决不计终态）", p == [], str(p))
+# 把新差额处置掉，六链收口
+svc.dispose_variance(conn, vf["id"], "accept_short")
+check("S8c 新差额处置后终态回到 1 且六链归零",
+      svc.fate_counts(conn, D8)["accept_short"] == 1 and svc.chain_problems(conn, D8) == [])
+conn.close()
+
+# S8d 交错半截：处置中途失败 -> 命运/三行/痕迹/物化全回滚，再次扫描产出与原一致
+conn = fresh_db()
+D9 = "2026-11-26"
+seed_day(conn, D9, 40, 38, 38)
+svc.run_reconcile(conn, D9)
+v = variance_of(conn, batch_of(conn)["id"], RICE)
+leg(conn, "expect_lines", "doc_no", f"ADJ-{v['id']}-E", SUP, RICE, D9, 0)  # 占位制造冲突
+conn.commit()
+try:
+    svc.dispose_variance(conn, v["id"], "accept_short")
+    check("S8d 交错应抛错", False)
+except Exception:
+    check("S8d 交错应抛错", True)
+check("S8d 半截后命运仍 pending", conn.execute("SELECT fate FROM variance_rows WHERE id=?", (v["id"],)).fetchone()["fate"] == "pending")
+check("S8d 半截后三行未被改", sums(conn, D9, SUP, RICE) == (40, 38, 38), str(sums(conn, D9, SUP, RICE)))
+check("S8d 半截后无痕迹", audits_of(conn, v["id"]) == [])
+check("S8d 半截后物化未刷新", conn.execute(
+    "SELECT expect_qty FROM match_rows WHERE batch_id=?", (batch_of(conn)["id"],)
+).fetchone()["expect_qty"] == 40)
+# 解除冲突再重试 -> 六链收口
+conn.execute("DELETE FROM expect_lines WHERE doc_no=?", (f"ADJ-{v['id']}-E",))
+conn.commit()
+svc.dispose_variance(conn, v["id"], "accept_short")
+check("S8d 重试后六链归零", svc.chain_problems(conn, D9) == [], str(svc.chain_problems(conn, D9)))
+conn.close()
+
 # ---------- 汇总 ----------
 print()
 if FAILURES:

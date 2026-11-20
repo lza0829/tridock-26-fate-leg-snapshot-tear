@@ -1,5 +1,5 @@
-from app.services.disposition import apply_fate, before_rerun
 from __future__ import annotations
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from app.db import connect
@@ -75,7 +75,9 @@ def variances(batch_id: int | None = None, dock_day: str | None = None):
             ).fetchall()
         else:
             rows = conn.execute("SELECT * FROM variance_rows ORDER BY id DESC").fetchall()
-        return [dict(r) for r in rows]
+        # 列表与处置同口径：带当前正式三腿和"终态能否解释当前数量"，
+        # 不用差额行里处置前的旧快照冒充现状。
+        return svc.variance_states(conn, rows)
     finally:
         conn.close()
 
@@ -102,5 +104,14 @@ def fate_counts(dock_day: str):
     conn = connect()
     try:
         return svc.fate_counts(conn, dock_day)
+    finally:
+        conn.close()
+
+@router.get("/reconcile/chain-check")
+def chain_check(dock_day: str):
+    conn = connect()
+    try:
+        problems = svc.chain_problems(conn, dock_day)
+        return {"dock_day": dock_day, "chains_aligned": not problems, "problems": problems}
     finally:
         conn.close()
